@@ -31,6 +31,7 @@ MODEL_PARAMS = {
     'plots_dir': 'plots',
     'plot_interval': 1000,
     'stop': False,
+    'stronger_d': False,
 }
 
 

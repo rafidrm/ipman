@@ -1,6 +1,7 @@
 import matplotlib as mpl
 mpl.use('tkagg')
 from matplotlib import pyplot as plt
+plt.rcParams["font.family"] = "Times New Roman"
 
 params = {
     'axes.labelsize': 10,

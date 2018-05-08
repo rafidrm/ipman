@@ -19,6 +19,8 @@ def get_loss_func(mode='test'):
         return lambda m, n: (m * n).mean()
     elif mode == 'test_quadratic':
         return lambda n: (torch.pow(n - 1, 2)).mean()
+    elif mode == 'quadratic':
+        return lambda v, Q, r: (torch.mm(torch.mm(v, Q), v.t()) + v * r).mean()
     else:
         raise NotImplementedError('distribution not recognized')
 
@@ -52,7 +54,7 @@ def box_dist(n):
     xy1 = np.concatenate([x1, y1])
 
     x2 = np.random.uniform(low=10, high=15, size=(1, n))
-    y2 = np.random.uniform(low=0, high=15, size=(1, n))
+    y2 = np.random.uniform(low=0, high=10, size=(1, n))
     xy2 = np.concatenate([x2, y2])
 
     return torch.Tensor(cat * xy1 + (1 - cat) * xy2)
@@ -66,11 +68,21 @@ def noisy_box_dist(n):
     xy1 = np.concatenate([x1, y1])
 
     x2 = np.random.uniform(low=10, high=15, size=(1, n))
-    y2 = np.random.uniform(low=0, high=15, size=(1, n))
+    y2 = np.random.uniform(low=0, high=10, size=(1, n))
     xy2 = np.concatenate([x2, y2])
 
     noise = np.random.normal(0, 0.4, size=(2, n))
     return torch.Tensor(cat * xy1 + (1 - cat) * xy2 + noise)
+
+
+def adv_noisy_box_dist(n):
+    x1 = np.random.uniform(low=-30, high=30, size=(1, n))
+    y1 = np.random.uniform(low=-30, high=30, size=(1, n))
+    xy1 = np.concatenate([x1, y1])
+
+    xy2 = np.zeros((2, n))
+    cat = 0 if np.abs(np.linalg.norm(xy1) - 10) <= 2 else 1
+    return torch.Tensor(cat * xy1 + (1 - cat) * xy2)
 
 
 def get_distribution_sampler(mode='normal'):
@@ -106,11 +118,19 @@ def get_generator_input_sampler(mode='normal'):
         raise NotImplementedError('sampler not recognized')
 
 
-###########################
+def get_adversarial_distribution(mode='normal'):
+    if mode == 'noisy_box_dist':
+        return adv_noisy_box_dist
+    else:
+        raise NotImplementedError('adversary not recognized')
+
+
+#
 # Models                  #
-###########################
+#
 
 class Generator(nn.Module):
+
     def __init__(self, input_size, hidden_size, output_size):
         super(Generator, self).__init__()
         model = [
@@ -127,6 +147,7 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
+
     def __init__(self, input_size, hidden_size, output_size):
         super(Discriminator, self).__init__()
         model = [
@@ -144,6 +165,7 @@ class Discriminator(nn.Module):
 
 
 class GANModel():
+
     def __init__(self, data, model, load_model=False):
         self.id = model['id']
         self.data = data
@@ -152,6 +174,10 @@ class GANModel():
         self.d_sampler = get_distribution_sampler(data['mode'])
         self.g_sampler = get_generator_input_sampler(data['mode'])
         self.epoch = 0
+
+        if model['stronger_d'] is True:
+            self.adversarial_d_sampler = get_adversarial_distribution(
+                data['mode'])
 
         if load_model is True:
             save_filename = 'ganG_{}_id_{}.pth'.format(
@@ -276,7 +302,9 @@ def optimizer(mdl):
     mdl.D = freeze_grads(mdl.D)
     model = mdl.model
     dual = model['dual_init']
-    linear_loss = torch.Tensor([2, 1])
+    # linear_loss = torch.Tensor([-1, 0])
+    quad_loss = torch.Tensor([[9, 0], [0, 1]])
+    lin_loss = torch.Tensor([-18, -22])
     for epoch in range(model['o_num_epochs']):
         for _ in range(model['g_steps']):
             mdl.G.zero_grad()
@@ -287,11 +315,14 @@ def optimizer(mdl):
                     mdl.g_sampler(1, model['g_input_size']))
                 g_fake_data = mdl.G(gen_input)
                 g_fake_decision = mdl.D(mdl.preprocess(g_fake_data))
-                g_feas_error = mdl.criterion(
-                    g_fake_decision, Variable(torch.ones(1)))
-                g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
+                g_feas_error = -1 * (g_fake_decision + 1e-20).log()
+                # g_feas_error = mdl.criterion(
+                #    g_fake_decision, Variable(torch.ones(1)))
+                # g_opt_error = mdl.optimizer_loss(g_fake_data, loss_param)
+                g_opt_error = mdl.optimizer_loss(
+                    g_fake_data, quad_loss, lin_loss)
                 g_error += g_feas_error + dual * g_opt_error
-                pu.db
+                # pu.db
             g_error.backward()
 
             mdl.g_optimizer.step()
@@ -353,13 +384,21 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
                     d_real_decision = mdl.D(mdl.preprocess(d_real_data).t())
                     d_real_error = mdl.criterion(
                         d_real_decision, Variable(torch.ones(1)))
-                    # d_real_error.backward()  # compute gradients but don't update yet
-                    d_gen_input = mdl.g_sampler(1, model['g_input_size'])
-                    # d_gen_input = Variable(
-                    #     mdl.g_sampler(model['minibatch_size'], model['g_input_size']))
-                    # detach to avoid training G
-                    d_fake_data = mdl.G(d_gen_input).detach()
-                    d_fake_decision = mdl.D(mdl.preprocess(d_fake_data))
+                    # d_real_error.backward()  # compute gradients but don't
+                    # update yet
+
+                    if np.random.rand() > 0.3:
+                        d_gen_input = mdl.g_sampler(1, model['g_input_size'])
+                        # d_gen_input = Variable(
+                        #     mdl.g_sampler(model['minibatch_size'], model['g_input_size']))
+                        # detach to avoid training G
+                        d_fake_data = mdl.G(d_gen_input).detach()
+                        d_fake_decision = mdl.D(mdl.preprocess(d_fake_data))
+                    else:
+                        d_gen_input = Variable(mdl.adversarial_d_sampler(1))
+                        d_fake_decision = mdl.D(
+                            mdl.preprocess(d_gen_input).t())
+
                     d_fake_error = mdl.criterion(
                         d_fake_decision, Variable(torch.zeros(1)))
                     # d_fake_error.backward()
@@ -377,7 +416,8 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
                     gen_input = Variable(
                         mdl.g_sampler(1, model['g_input_size']))
                     # gen_input = Variable(
-                    #     mdl.g_sampler(model['minibatch_size'], model['g_input_size']))
+                    # mdl.g_sampler(model['minibatch_size'],
+                    # model['g_input_size']))
                     g_fake_data = mdl.G(gen_input)
                     g_fake_decision = mdl.D(mdl.preprocess(g_fake_data))
                     g_error = mdl.criterion(
@@ -396,7 +436,8 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
                     extract(g_error)[0]))
                 real_dist = stats(extract(d_real_data))
                 fake_dist = stats(extract(d_fake_data))
-                # print('       Real: {}, Fake: {}'.format(real_dist, fake_dist))
+                # print('       Real: {}, Fake: {}'.format(real_dist,
+                # fake_dist))
 
         # final discriminator update
         for _ in range(50):
@@ -410,12 +451,17 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
                 d_real_decision = mdl.D(mdl.preprocess(d_real_data).t())
                 d_real_error = mdl.criterion(
                     d_real_decision, Variable(torch.ones(1)))
-                # d_real_error.backward()  # compute gradients but don't update yet
-                d_gen_input = mdl.g_sampler(1, model['g_input_size'])
-                # d_gen_input = Variable(
-                #     mdl.g_sampler(model['minibatch_size'], model['g_input_size']))
-                # detach to avoid training G
-                d_fake_data = mdl.G(d_gen_input).detach()
+
+                if np.random.rand() > 0.3:
+                    d_gen_input = mdl.g_sampler(1, model['g_input_size'])
+                    # detach to avoid training G
+                    d_fake_data = mdl.G(d_gen_input).detach()
+                    d_fake_decision = mdl.D(mdl.preprocess(d_fake_data))
+
+                else:
+                    d_gen_input = Variable(mdl.adversarial_d_sampler(1))
+                    d_fake_decision = mdl.D(
+                        mdl.preprocess(d_gen_input).t())
                 d_fake_decision = mdl.D(mdl.preprocess(d_fake_data))
                 d_fake_error = mdl.criterion(
                     d_fake_decision, Variable(torch.zeros(1)))
@@ -458,22 +504,21 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
 
 
 if __name__ == "__main__":
-    # 2dBox1: it worked!
-    # 2dBox2
-    # ring1: I learned the distribution pretty well but i might be able to improve
-    # ring2: looks better.
-    # ring3: added adaptive discriminator, results look good.
-    data_params = {'preprocess': False, 'mode': 'box_dist'}
-    model_params = {'p_num_epochs': 40000, 'tol': 0.01,
+    # noisy_box1: generator too good for discriminator
+    # noisy_box2: looks a lot better
+    data_params = {'preprocess': False, 'mode': 'noisy_box_dist'}
+    model_params = {'p_num_epochs': 10000, 'tol': 0.01,
                     'g_input_size': 2,
                     'g_output_size': 2,
                     'd_input_size': 2,  # overwritten to tie with minibatch
                     'minibatch_size': 50,
-                    'loss': 'linear',
-                    'o_num_epochs': 5000,
-                    'dual_decay': 1.5,
-                    'dual_init': 1000.0,
-                    'id': '2dBox1'}
+                    'loss': 'quadratic',
+                    'o_num_epochs': 3200,
+                    'dual_decay': 1.00005,
+                    'dual_init': 1.00001,
+                    'plot_interval': 400,
+                    'stronger_d': True,
+                    'id': 'noisy_box2'}
     # model_params['d_input_size'] = model_params['minibatch_size']
     box_experiment(data_params=data_params,
                    model_params=model_params, stage='optimize')
