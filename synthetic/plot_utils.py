@@ -1,15 +1,27 @@
 import matplotlib as mpl
-mpl.use('tkagg')
+# mpl.use('tkagg')
 from matplotlib import pyplot as plt
-plt.rcParams["font.family"] = "Times New Roman"
+from matplotlib.ticker import LinearLocator, FuncFormatter
+# plt.rcParams["font.family"] = "Times New Roman"
 
 params = {
     'axes.labelsize': 10,
     'font.size': 10,
     'xtick.labelsize': 10,
     'ytick.labelsize': 10,
+    'font.family': 'Times New Roman',
+    'figure.figsize': [4, 4],
+    'lines.markeredgewidth': 0,
+    'lines.linestyle': '--',
+    'lines.linewidth': 0.75,
 }
 mpl.rcParams.update(params)
+
+
+def nosigfig(x, pos):
+    return int(round(x))
+
+TickFormatter = FuncFormatter(nosigfig)
 
 
 def post_ax_update(ax, kwargs):
@@ -22,6 +34,15 @@ def post_ax_update(ax, kwargs):
     if 'no_spines' in kwargs:
         for spine in plt.gca().spines.values():
             spine.set_visible(False)
+
+    if 'numticks' in kwargs:
+        ax.xaxis.set_major_locator(LinearLocator(numticks=kwargs['numticks']))
+        ax.yaxis.set_major_locator(LinearLocator(numticks=kwargs['numticks']))
+        ax.xaxis.set_major_formatter(TickFormatter)
+        ax.yaxis.set_major_formatter(TickFormatter)
+
+    if 'mode' in kwargs:
+        ax = plot_poly(kwargs['mode'], ax)
     return ax
 
 
@@ -40,7 +61,7 @@ def plot_hist(data, fig=None, ax=None, **kwargs):
     ax = post_ax_update(ax, kwargs)
     if 'save_fig' in kwargs:
         fig.savefig(kwargs['save_fig'], bbox_inches='tight',
-                    dpi=300, transparent=True)
+                    dpi=300)
     return fig, ax
 
 
@@ -50,15 +71,28 @@ def plot_2d_samples(data, fig=None, ax=None, **kwargs):
     color = kwargs['color'] if 'color' in kwargs else '#2f528f'
     alpha = kwargs['alpha'] if 'alpha' in kwargs else 1.0
     marker = kwargs['marker'] if 'marker' in kwargs else 'o'
+    zorder = kwargs['zorder'] if 'zorder' in kwargs else 1
     ax.scatter(x=data[0], y=data[1],
                c=color,
                alpha=alpha,
-               marker=marker)
+               marker=marker,
+               zorder=zorder)
     ax = post_ax_update(ax, kwargs)
     if 'save_fig' in kwargs:
         fig.savefig(kwargs['save_fig'], bbox_inches='tight',
-                    dpi=300, transparent=True)
+                    dpi=300)
     return fig, ax
+
+
+def plot_poly(mode, ax, **kwargs):
+    if mode == 'noisy_box_dist' or mode == 'box_dist':
+        x = [9, 16, 16, -1, -1, 9, 9]
+        y = [-1, -1, 16, 16, 9, 9, -1]
+        ax.plot(x, y, color='0.01', **kwargs)
+    else:
+        raise NotImplementedError('i dont know the feasible set.')
+
+    return ax
 
 
 def show():

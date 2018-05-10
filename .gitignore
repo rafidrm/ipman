@@ -30,5 +30,6 @@ build/
 dist/
 results/
 plots/
+aaron/
 
 # Torch specific

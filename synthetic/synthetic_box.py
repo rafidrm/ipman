@@ -7,6 +7,8 @@ import torch.optim as optim
 from torch.autograd import Variable
 from scipy.stats import shapiro
 import pudb
+from pprint import pprint
+
 
 from options import load_params
 import plot_utils as plot
@@ -20,7 +22,7 @@ def get_loss_func(mode='test'):
     elif mode == 'test_quadratic':
         return lambda n: (torch.pow(n - 1, 2)).mean()
     elif mode == 'quadratic':
-        return lambda v, Q, r: (torch.mm(torch.mm(v, Q), v.t()) + v * r).mean()
+        return lambda v, Q, r: (torch.mm(torch.mm(v, Q), v.t()) + torch.mm(r, v.t())).mean()
     else:
         raise NotImplementedError('distribution not recognized')
 
@@ -282,19 +284,28 @@ def generate_2d_samples(mdl, n_samples=1000, show_real=True, save_fig=False):
 
     gen_input = Variable(mdl.g_sampler(n_samples, mdl.model['g_input_size']))
     g_output = mdl.G(gen_input).detach().numpy().T
+
+    kwargs = {'alpha': 0.5, 'numticks': 5}
     if save_fig:
-        fig, ax = plot.plot_2d_samples(g_output, alpha=0.7, save_fig=save_path)
+        kwargs['save_fig'] = save_path
     else:
-        fig, ax = plot.plot_2d_samples(g_output, alpha=0.7)
+        pass
+
+    fig, ax = plot.plot_2d_samples(g_output, **kwargs)
 
     if show_real:
         gen_dist = mdl.d_sampler(n_samples).numpy()
+        kwargs['color'] = '#ed7d31'
+        kwargs['alpha'] = 0.1
+        kwargs['zorder'] = -10
+        kwargs['mode'] = mdl.data['mode']
+        plot.plot_2d_samples(gen_dist, fig, ax, **kwargs)
         # fig2, ax2 = plot.plot_hist(gen_dist, color='#ed7d31', alpha=0.7)
-        if save_fig:
-            plot.plot_2d_samples(
-                gen_dist, fig, ax, color='#ed7d31', alpha=0.7, save_fig=save_path)
-        else:
-            plot.plot_2d_samples(gen_dist, fig, ax, color='#ed7d31', alpha=0.7)
+        # if save_fig:
+        #     plot.plot_2d_samples(
+        # gen_dist, fig, ax, color='#ed7d31', alpha=0.3, save_fig=save_path)
+        # else:
+        # plot.plot_2d_samples(gen_dist, fig, ax, color='#ed7d31', alpha=0.3)
 
 
 def optimizer(mdl):
@@ -302,9 +313,17 @@ def optimizer(mdl):
     mdl.D = freeze_grads(mdl.D)
     model = mdl.model
     dual = model['dual_init']
-    # linear_loss = torch.Tensor([-1, 0])
-    quad_loss = torch.Tensor([[9, 0], [0, 1]])
-    lin_loss = torch.Tensor([-18, -22])
+
+    if model['loss'] == 'linear':
+        linear_loss = torch.Tensor([-1, 0])
+    elif model['loss'] == 'quadratic':
+        quad_loss = torch.Tensor([[0, 1], [1, 0]])
+        lin_loss = torch.Tensor([[-8, -8]])
+        # quad_loss = torch.Tensor([[1, 0], [0, 1]])
+        # lin_loss = torch.Tensor([[-10, -22]])
+    else:
+        raise NotImplementedError('dont use this loss.')
+
     for epoch in range(model['o_num_epochs']):
         for _ in range(model['g_steps']):
             mdl.G.zero_grad()
@@ -318,11 +337,14 @@ def optimizer(mdl):
                 g_feas_error = -1 * (g_fake_decision + 1e-20).log()
                 # g_feas_error = mdl.criterion(
                 #    g_fake_decision, Variable(torch.ones(1)))
-                # g_opt_error = mdl.optimizer_loss(g_fake_data, loss_param)
+
+                # if linear uncomment this:
+                # g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
+                # if quadratic uncomment this:
                 g_opt_error = mdl.optimizer_loss(
                     g_fake_data, quad_loss, lin_loss)
+
                 g_error += g_feas_error + dual * g_opt_error
-                # pu.db
             g_error.backward()
 
             mdl.g_optimizer.step()
@@ -341,6 +363,9 @@ def optimizer(mdl):
 
         if epoch % model['plot_interval'] == 0:
             generate_2d_samples(mdl, show_real=True, save_fig=True)
+
+            if epoch > 14000:
+                model['dual_decay'] = 1.005
 
     opt_sol = mdl.generate_optimal_sol(10)
     print(opt_sol)
@@ -510,15 +535,21 @@ if __name__ == "__main__":
     model_params = {'p_num_epochs': 10000, 'tol': 0.01,
                     'g_input_size': 2,
                     'g_output_size': 2,
-                    'd_input_size': 2,  # overwritten to tie with minibatch
+                    'd_input_size': 2,
                     'minibatch_size': 50,
                     'loss': 'quadratic',
-                    'o_num_epochs': 3200,
-                    'dual_decay': 1.00005,
-                    'dual_init': 1.00001,
-                    'plot_interval': 400,
+                    'o_num_epochs': 16100,
+                    'dual_decay': 1.01,  # 1.005,
+                    'dual_init': 0.05,
+                    'plot_interval': 1000,
                     'stronger_d': True,
-                    'id': 'noisy_box2'}
+                    'id': 'noisy_box2',
+                    'notes': 'minimizes 2xy - 8x - 8y'}
+
+    print('*********************\n data parameters:\n*********************')
+    pprint(data_params)
+    print('*********************\n model parameters:\n*********************')
+    pprint(model_params)
     # model_params['d_input_size'] = model_params['minibatch_size']
     box_experiment(data_params=data_params,
                    model_params=model_params, stage='optimize')
