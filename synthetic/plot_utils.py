@@ -1,3 +1,4 @@
+import numpy as np
 import matplotlib as mpl
 # mpl.use('tkagg')
 from matplotlib import pyplot as plt
@@ -57,7 +58,18 @@ def plot_hist(data, fig=None, ax=None, **kwargs):
             bins=bins,
             color=color,
             alpha=alpha,
-            rwidth=rwidth)
+            rwidth=rwidth,
+            histtype='step', cumulative=-1, density=True,
+            )
+
+    ax.xaxis.set_major_locator(LinearLocator(numticks=5))
+    ax.yaxis.set_major_locator(LinearLocator(numticks=5))
+    # ax.set_xlim([0.7, 1.5]) # lin ez
+    ax.set_xlim([2.8, 4.2])  # lin hard
+    # ax.set_xlim([0.0, 0.05]) # quad
+    # ax.set_xlim([0, 60])  # bilin
+    ax.set_ylim([0.0, 1.0])
+
     ax = post_ax_update(ax, kwargs)
     if 'save_fig' in kwargs:
         fig.savefig(kwargs['save_fig'], bbox_inches='tight',

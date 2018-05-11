@@ -274,7 +274,18 @@ def generate_hist(mdl, n_samples=1000, show_real=False, save_fig=False):
             plot.plot_hist(gen_dist, fig, ax, color='#ed7d31', alpha=0.7)
 
 
-def generate_2d_samples(mdl, n_samples=1000, show_real=True, save_fig=False):
+def generate_epsilon_hist(mdl, epsilons, save_fig=False):
+    if save_fig:
+        save_filename = 'id_{}_error_hist.png'.format(
+            mdl.model['id'], mdl.epoch)
+        save_path = os.path.join(mdl.model['plots_dir'], save_filename)
+    if save_fig:
+        fig, ax = plot.plot_hist(epsilons, alpha=0.7, save_fig=save_path)
+    else:
+        fig, ax = plot.plot_hist(epsilons, alpha=0.7)
+
+
+def generate_2d_samples(mdl, n_samples=2000, show_real=True, save_fig=False):
     ''' plot 2-D samples'''
     if save_fig:
         save_filename = 'id_{}_loss_{}_epoch_{}.png'.format(
@@ -285,7 +296,7 @@ def generate_2d_samples(mdl, n_samples=1000, show_real=True, save_fig=False):
     gen_input = Variable(mdl.g_sampler(n_samples, mdl.model['g_input_size']))
     g_output = mdl.G(gen_input).detach().numpy().T
 
-    kwargs = {'alpha': 0.5, 'numticks': 5}
+    kwargs = {'alpha': 0.3, 'numticks': 5}
     if save_fig:
         kwargs['save_fig'] = save_path
     else:
@@ -315,7 +326,8 @@ def optimizer(mdl):
     dual = model['dual_init']
 
     if model['loss'] == 'linear':
-        linear_loss = torch.Tensor([-1, 0])
+        # linear_loss = torch.Tensor([1, 0])
+        linear_loss = torch.Tensor([1, 1])
     elif model['loss'] == 'quadratic':
         quad_loss = torch.Tensor([[0, 1], [1, 0]])
         lin_loss = torch.Tensor([[-8, -8]])
@@ -339,10 +351,10 @@ def optimizer(mdl):
                 #    g_fake_decision, Variable(torch.ones(1)))
 
                 # if linear uncomment this:
-                # g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
+                g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
                 # if quadratic uncomment this:
-                g_opt_error = mdl.optimizer_loss(
-                    g_fake_data, quad_loss, lin_loss)
+                # g_opt_error = mdl.optimizer_loss(
+                #    g_fake_data, quad_loss, lin_loss)
 
                 g_error += g_feas_error + dual * g_opt_error
             g_error.backward()
@@ -364,11 +376,32 @@ def optimizer(mdl):
         if epoch % model['plot_interval'] == 0:
             generate_2d_samples(mdl, show_real=True, save_fig=True)
 
-            if epoch > 14000:
+            # if epoch > 14000:
+            if epoch > 40000:
                 model['dual_decay'] = 1.005
 
-    opt_sol = mdl.generate_optimal_sol(10)
+    opt_sol = mdl.generate_optimal_sol(10000)
+
+    # evaluate scores
+    scores = []
+    for sol in opt_sol:
+        # err = (sol[0] - 5) ** 2 + (sol[1] - 11) ** 2
+        # err = 2 * (sol[0] * sol[1]) - 8 * sol[0] - 8 * sol[1]
+        # sol = torch.Tensor([sol])
+        err = mdl.optimizer_loss(sol, linear_loss).tolist()
+        # err = mdl.optimizer_loss(sol, quad_loss, lin_loss).tolist()
+        scores.append(np.abs(err - model['optval']))
+
+    # pu.db
+    bins, epsilons = np.histogram(scores)
+    bins = bins / np.sum(bins)
+    print('optimal solutions sampled:')
     print(opt_sol)
+    print('epsilons:')
+    print(epsilons)
+    print('bins:')
+    print(bins)
+    generate_epsilon_hist(mdl, scores, save_fig=True)
 
 
 def debug_discriminator(mdl):
@@ -537,14 +570,15 @@ if __name__ == "__main__":
                     'g_output_size': 2,
                     'd_input_size': 2,
                     'minibatch_size': 50,
-                    'loss': 'quadratic',
-                    'o_num_epochs': 16100,
-                    'dual_decay': 1.01,  # 1.005,
+                    'loss': 'linear',
+                    'o_num_epochs': 70100,
+                    'dual_decay': 1.01,
                     'dual_init': 0.05,
-                    'plot_interval': 1000,
+                    'plot_interval': 5000,
                     'stronger_d': True,
                     'id': 'noisy_box2',
-                    'notes': 'minimizes 2xy - 8x - 8y'}
+                    'optval': 8,
+                    'notes': 'minimizing bilinear but studying epsilon optimality.'}
 
     print('*********************\n data parameters:\n*********************')
     pprint(data_params)
