@@ -285,7 +285,7 @@ def generate_epsilon_hist(mdl, epsilons, save_fig=False):
         fig, ax = plot.plot_hist(epsilons, alpha=0.7)
 
 
-def generate_2d_samples(mdl, n_samples=2000, show_real=True, save_fig=False):
+def generate_2d_samples(mdl, n_samples=2000, samples=None, show_real=True, save_fig=False):
     ''' plot 2-D samples'''
     if save_fig:
         save_filename = 'id_{}_loss_{}_epoch_{}.png'.format(
@@ -293,8 +293,12 @@ def generate_2d_samples(mdl, n_samples=2000, show_real=True, save_fig=False):
         save_path = os.path.join(mdl.model['plots_dir'], save_filename)
         print('saving to: {}'.format(save_path))
 
-    gen_input = Variable(mdl.g_sampler(n_samples, mdl.model['g_input_size']))
-    g_output = mdl.G(gen_input).detach().numpy().T
+    if samples is None:
+        gen_input = Variable(
+            mdl.g_sampler(n_samples, mdl.model['g_input_size']))
+        g_output = mdl.G(gen_input).detach().numpy().T
+    else:
+        g_output = samples
 
     kwargs = {'alpha': 0.3, 'numticks': 5}
     if save_fig:
@@ -354,7 +358,7 @@ def optimizer(mdl):
                 g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
                 # if quadratic uncomment this:
                 # g_opt_error = mdl.optimizer_loss(
-                #    g_fake_data, quad_loss, lin_loss)
+                #     g_fake_data, quad_loss, lin_loss)
 
                 g_error += g_feas_error + dual * g_opt_error
             g_error.backward()
@@ -380,7 +384,7 @@ def optimizer(mdl):
             if epoch > 40000:
                 model['dual_decay'] = 1.005
 
-    opt_sol = mdl.generate_optimal_sol(10000)
+    opt_sol = list(mdl.generate_optimal_sol(1000))
 
     # evaluate scores
     scores = []
@@ -390,18 +394,22 @@ def optimizer(mdl):
         # sol = torch.Tensor([sol])
         err = mdl.optimizer_loss(sol, linear_loss).tolist()
         # err = mdl.optimizer_loss(sol, quad_loss, lin_loss).tolist()
-        scores.append(np.abs(err - model['optval']))
+        scores.append((np.abs(err - model['optval']), sol))
+    scores = sorted(scores, key=lambda x: x[0])
+    scores = scores[0:round(1000 * 0.9)]
+    sols = np.array([score[1] for score in scores]).T
+    generate_2d_samples(mdl, samples=sols, show_real=True, save_fig=True)
 
     # pu.db
-    bins, epsilons = np.histogram(scores)
-    bins = bins / np.sum(bins)
-    print('optimal solutions sampled:')
-    print(opt_sol)
-    print('epsilons:')
-    print(epsilons)
-    print('bins:')
-    print(bins)
-    generate_epsilon_hist(mdl, scores, save_fig=True)
+    # bins, epsilons = np.histogram(scores)
+    # bins = bins / np.sum(bins)
+    # print('optimal solutions sampled:')
+    # print(opt_sol)
+    # print('epsilons:')
+    # print(epsilons)
+    # print('bins:')
+    # print(bins)
+    # generate_epsilon_hist(mdl, scores, save_fig=True)
 
 
 def debug_discriminator(mdl):
@@ -577,8 +585,8 @@ if __name__ == "__main__":
                     'plot_interval': 5000,
                     'stronger_d': True,
                     'id': 'noisy_box2',
-                    'optval': 8,
-                    'notes': 'minimizing bilinear but studying epsilon optimality.'}
+                    'optval': 0,
+                    'notes': 'minimizing quadratic with clipping'}
 
     print('*********************\n data parameters:\n*********************')
     pprint(data_params)
