@@ -33,3 +33,4 @@ class TestOptions(BaseOptions):
                 default=500,
                 help='how many test images to run')
         self.isTrain = False
+        self.isOptim = False

@@ -116,5 +116,9 @@ class TrainOptions(BaseOptions):
                 type=int,
                 default=50,
                 help='multiply by a gamma every lr_decay_iters iterations')
-
+        self.parser.add_argument(
+                '--augment_train',
+                action='store_true',
+                help='if set true, then will augment with infeasible data.')
         self.isTrain = True
+        self.isOptim = False

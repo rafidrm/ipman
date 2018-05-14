@@ -21,13 +21,13 @@ class Vox2VoxModel(BaseModel):
         # load and define networks according to opts
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.which_model_netG, opt.norm, not opt.no_dropout, opt.init_type, self.gpu_ids)
 
-        if self.isTrain:
+        if self.isTrain or self.isOptim:
             use_sigmoid = opt.no_lsgan
             self.netD = networks.define_D(opt.input_nc + opt.output_nc, opt.ndf, opt.which_model_netD, opt.n_layers_D, opt.norm, use_sigmoid, opt.init_type, self.gpu_ids)
 
         if not self.isTrain or opt.continue_train:
             self.load_network(self.netG, 'G', opt.which_epoch)
-            if self.isTrain:
+            if self.isTrain or self.isOptim:
                 self.load_network(self.netD, 'D', opt.which_epoch)
 
         if self.isTrain:
@@ -51,9 +51,39 @@ class Vox2VoxModel(BaseModel):
             for optimizer in self.optimizers:
                 self.schedulers.append(networks.get_scheduler(optimizer, opt))
 
+        if self.isOptim:
+            # define loss functions: optimality and feasibility
+            if opt.objective == 'ideal_l2':
+                self.criterionOptim = torch.nn.MSELoss()
+            elif opt.objective == 'ideal_l1':
+                self.criterionOptim = torch.nn.L1Loss()
+            elif opt.objective == 'elementwise':
+                self.criterionOptim = lambda m, n: (m * n).mean()
+            else:
+                raise NotImplementedError('i do not recognize this objective [{}]'.format(opt.objective))
+            self.criterionGAN = networks.GANLoss(
+                    use_lsgan=not opt.no_lsgan, tensor=self.Tensor)
+
+            self.lambda_dual = self.opt.lambda_dual
+            self.dual_decay = self.opt.dual_decay
+
+            # freeze discriminator
+            for param in self.netD.parameters():
+                param.requires_grad = False
+
+            # initialize optimizer
+            self.schedulers = []
+            self.optimizers = []
+            self.optimizer_G = torch.optim.Adam(
+                    self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizers.append(self.optimizer_G)
+            for optimizer in self.optimizers:
+                self.schedulers.append(networks.get_scheduler(optimizer, opt))
+
+
         print('---------- Networks initialized ----------')
         networks.print_network(self.netG)
-        if self.isTrain:
+        if self.isTrain or self.isOptim:
             networks.print_network(self.netD)
         print('------------------------------------------')
 
@@ -66,7 +96,26 @@ class Vox2VoxModel(BaseModel):
             input_B = input_B.cuda(self.gpu_ids[0], async=True)
         self.input_A = input_A
         self.input_B = input_B
+        self.is_feasible = input['is_feasible']
         self.image_paths = input['A_paths' if AtoB else 'B_paths']
+        
+        if self.isOptim:
+            self.optimObj = input['obj']
+            if len(self.gpu_ids) > 0:
+                self.optimObj = self.optimObj.cuda(self.gpu_ids[0], async=True)
+
+
+    def generate_samples(self, nsamples):
+        samples = []
+        for ix in range(nsamples):
+            self.forward()
+            if self.no_img:
+                fake_B = util.tensor2vid(self.fake_B.data, gray_to_rgb=False)
+            else:
+                fake_B = util.tensor2vid(self.fake_B.data)
+            samples.append(fake_B)
+        return OrderedDict(
+                [('fake_{}'.format(ix), val) for ix, val in enumerate(samples)])
 
     def forward(self):
         # run this after setting inputs
@@ -91,12 +140,21 @@ class Vox2VoxModel(BaseModel):
                 torch.cat((self.real_A, self.fake_B), 1).data)
         pred_fake = self.netD(fake_AB.detach())
         self.loss_D_fake = self.criterionGAN(pred_fake, False)
-
+        
         # real
         real_AB = torch.cat((self.real_A, self.real_B), 1)
         pred_real = self.netD(real_AB)
-        self.loss_D_real = self.criterionGAN(pred_real, True)
-
+        
+        # added for augmenting training with infeasible points.
+        if self.is_feasible.sum().item() == len(self.is_feasible):
+            self.loss_D_real = self.criterionGAN(pred_real, True)
+        elif self.is_feasible.sum().item() == 0:
+            self.loss_D_real = self.criterionGAN(pred_real, False)
+        elif self.is_feasible.sum().item() == len(self.is_feasible) * -1:
+            self.loss_D_real = self.criterionGAN(pred_real, True)
+        else:
+            raise ValueError('something went wrong with training augment.')
+        
         # combined loss
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
 
@@ -109,11 +167,42 @@ class Vox2VoxModel(BaseModel):
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)  # log trick?
 
         # second G(A) = B
-        self.loss_G_L1 = self.criterionL1(self.fake_B,
-                self.real_B) * self.opt.lambda_A
+        if self.is_feasible.sum().item() == len(self.is_feasible) :
+            self.loss_G_L1 = self.criterionL1(self.fake_B,
+                    self.real_B) * self.opt.lambda_A
+        elif self.is_feasible.sum().item() == len(self.is_feasible) * -1 :
+            self.loss_G_L1 = self.criterionL1(self.fake_B,
+                    self.real_B) * self.opt.lambda_A
+        else:
+            self.loss_G_L1 = 0
         self.loss_G = self.loss_G_GAN + self.loss_G_L1
 
         self.loss_G.backward()
+
+    def optimize_ipman(self):
+        self.real_A = Variable(self.input_A)
+        self.fake_B = self.netG(self.real_A)
+
+        self.optimizer_G.zero_grad()
+        fake_AB = torch.cat((self.real_A, self.fake_B), 1)
+        pred_fake = self.netD(fake_AB)
+        pu.db
+        # TODO: I am using criterion GAN but might have to change it to a fixed
+        # log function.
+        self.loss_feas = -1 * (pred_fake + 1e-6).log().mean()
+        # self.loss_feas = self.criterionGAN(pred_fake, True)
+        # self.loss_feas = self.loss_feas
+        # pu.db
+
+        # TODO: haven't defined optimObj yet
+        self.loss_opt = self.criterionOptim(self.fake_B, self.optimObj)
+        self.loss_smooth = pred_fake.norm() * 0.005
+        # self.loss_smooth = self.L2Regularizer(pred_fake, False)
+        # self.loss_smooth = self.loss_smooth * 0.0
+
+        self.loss_G = self.loss_feas + self.loss_opt * self.lambda_dual + self.loss_smooth * self.lambda_dual
+        self.loss_G.backward()
+        self.optimizer_G.step()
 
     def optimize_parameters(self):
         self.forward()
@@ -129,6 +218,9 @@ class Vox2VoxModel(BaseModel):
     def get_current_errors(self):
         return OrderedDict([('G_GAN', self.loss_G_GAN.data[0]), ('G_L1', self.loss_G_L1.data[0]), ('D_real', self.loss_D_real.data[0]), ('D_fake', self.loss_D_fake.data[0])])
 
+    def get_current_ipman_errors(self):
+        return OrderedDict([('G_Feas', self.loss_feas.data[0]), ('G_Opt', self.loss_opt.data[0]), ('Lambda', self.lambda_dual)])
+
     def get_current_visuals(self):
         real_A = util.tensor2vid(self.real_A.data)
         if self.no_img:
@@ -137,8 +229,18 @@ class Vox2VoxModel(BaseModel):
         else:
             fake_B = util.tensor2vid(self.fake_B.data)
             real_B = util.tensor2vid(self.real_B.data)
-        return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('real_B', real_B)])
+        if self.isOptim:
+            if self.no_img:
+                obj = util.tensor2vid(self.optimObj.data, gray_to_rgb=False)
+            else:
+                obj = util.tensor2vid(self.optimObj.data)
+            return OrderedDict([('input', real_A), ('decision', fake_B), ('obj', obj), ('feas', real_B)])
+        else:
+            return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('real_B', real_B)])
 
     def save(self, label):
         self.save_network(self.netG, 'G', label, self.gpu_ids)
         self.save_network(self.netD, 'D', label, self.gpu_ids)
+
+    def update_lambda_dual(self, decay_weight=1):
+        self.lambda_dual = self.lambda_dual * self.dual_decay * decay_weight

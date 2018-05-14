@@ -679,6 +679,7 @@ class UnetGenerator(nn.Module):
         self.model = unet_block
 
     def forward(self, input):
+        # pu.db
         if self.gpu_ids and isinstance(input.data, torch.cuda.FloatTensor):
             return nn.parallel.data_parallel(self.model, input, self.gpu_ids)
         else:

@@ -1,4 +1,5 @@
 import os.path
+from numpy.random import randn
 import random
 import torchvision.transforms as transforms
 import torch
@@ -54,10 +55,19 @@ class VoxelDataset(BaseDataset):
         ''' Reference images are CT scans with highlighted OARs and PTVs. The
         targets are dose intensity matrices.
         '''
-        dose_val = mat['dose_vals']
+        
+        dose_val = mat['dose_imgs'] 
+        # dose_val = mat['dose_vals']
         ct_img = mat['ct_imgs']
         d, w, h, nc = ct_img.shape
         assert (d, w, h) == dose_val.shape, 'size mismatch between dose and ct'
+        
+        # I have to add some noise to ct_val because we are just training on
+        # a single patient and ct_val is the same all the time. I divide by
+        # 1000 to give stdev~=0.001, which is sufficiently small.
+        rnd_noise = randn(*ct_img.shape) / 500
+        ct_img = ct_img + rnd_noise
+        ct_img[ct_img <= 0] = 0.0
 
         A = vox2tensor(ct_img).float()
         A = normalize3d(A, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -89,7 +99,35 @@ class VoxelDataset(BaseDataset):
         else:
             raise NotImplementedError('channels dont align.')
 
-        return {'A': A, 'B': B, 'A_paths': AB_path, 'B_paths': AB_path}
+        res = {'A': A, 'B': B, 'A_paths': AB_path, 'B_paths': AB_path}
+
+        # in optimizer mode need to define objective function
+        if self.opt.isOptim:
+            if self.opt.objective == 'elementwise':
+                obj = torch.from_numpy(mat['obj_Mat']).float()
+                obj = obj.unsqueeze(0)
+                obj.sub_(0.5)
+                obj[obj == -0.5] = 0.0
+                obj.div_(0.5)
+                # obj.sub_(0.5).div_(0.5)
+                res['obj'] = obj
+            elif self.opt.objective == 'ideal_l2':
+                obj = torch.from_numpy(mat['idealDose']).float()
+                obj = obj.unsqueeze(0)
+                obj.sub_(0.5).div_(0.5)
+                res['obj'] = obj
+            else:
+                raise NotImplementedError(' this objective not ready.')
+            pass
+
+        # for dataset augmentation with feasible/infeasible solutions.
+        if ('is_feasible' in mat) and (self.opt.augment_train is True):
+            is_feasible = mat['is_feasible'][0,0]
+        else:
+            is_feasible = -1
+        res['is_feasible'] = is_feasible
+        
+        return res 
 
     def __len__(self):
         return len(self.AB_paths)

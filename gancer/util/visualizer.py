@@ -15,7 +15,7 @@ class Visualizer():
     def __init__(self, opt):
         # self.opt = opt
         self.display_id = opt.display_id
-        self.use_html = opt.isTrain and not opt.no_html
+        self.use_html = (opt.isTrain and not opt.no_html) or opt.isOptim
         self.no_img = opt.no_img and not opt.isTrain
         self.win_size = opt.display_winsize
         self.name = opt.name
@@ -165,7 +165,7 @@ class Visualizer():
                                                                        i, t,
                                                                        t_data)
         for k, v in errors.items():
-            message += '%s: %.3f ' % (k, v)
+            message += '%s: %.5f ' % (k, v)
 
         print(message)
         with open(self.log_name, "a") as log_file:
