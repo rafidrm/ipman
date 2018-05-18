@@ -23,16 +23,18 @@ for epoch in range(opt.epoch_count, opt.niter + opt.niter_decay + 1):
     skip_count = 0
 
     for i, data in enumerate(dataset):
-        if abs(data['is_feasible'].sum().item()) != len(data['is_feasible']):
-            skip_count += 1
-            continue
-
         iter_start_time = time.time()
         if total_steps % opt.print_freq == 0:
             t_data = iter_start_time - iter_data_time
         visualizer.reset()
         total_steps += opt.batchSize
         epoch_iter += opt.batchSize
+        
+        if abs(data['is_feasible'].sum().item()) != len(data['is_feasible']):
+            if abs(data['is_feasible'].sum().item()) != 0:
+                skip_count += 1
+                continue
+
         model.set_input(data)
         model.optimize_parameters()
         if total_steps % opt.display_freq == 0:
@@ -62,8 +64,9 @@ for epoch in range(opt.epoch_count, opt.niter + opt.niter_decay + 1):
         model.save('latest')
         model.save(epoch)
 
-    print('End of epoch {} / {} \t Skipped {} entries \t Time taken {} sec'.format(
+    print('End of epoch {} / {} \t Skipped {} entries \t Total steps {} \t Time taken {} sec'.format(
         epoch, opt.niter + opt.niter_decay,
         skip_count,
+        total_steps,
         time.time() - epoch_start_time))
     model.update_learning_rate()

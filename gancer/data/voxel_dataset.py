@@ -106,16 +106,26 @@ class VoxelDataset(BaseDataset):
             if self.opt.objective == 'elementwise':
                 obj = torch.from_numpy(mat['obj_Mat']).float()
                 obj = obj.unsqueeze(0)
-                obj.sub_(0.5)
-                obj[obj == -0.5] = 0.0
-                obj.div_(0.5)
-                # obj.sub_(0.5).div_(0.5)
+                # obj[ obj == 0 ] = 0.001
+                # obj[ obj == -1 ] = -0.5 
                 res['obj'] = obj
+
             elif self.opt.objective == 'ideal_l2':
                 obj = torch.from_numpy(mat['idealDose']).float()
                 obj = obj.unsqueeze(0)
                 obj.sub_(0.5).div_(0.5)
                 res['obj'] = obj
+
+            elif self.opt.objective == 'linear_l2':
+                obj = torch.from_numpy(mat['obj_Mat']).float()
+                obj = obj.unsqueeze(0)
+                res['obj'] = obj
+
+                ideal = torch.from_numpy(mat['L2Obj']).float()
+                ideal = ideal.unsqueeze(0)
+                ideal.sub_(0.5).div_(0.5)
+                res['ideal'] = ideal
+
             else:
                 raise NotImplementedError(' this objective not ready.')
             pass

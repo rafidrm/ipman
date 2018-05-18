@@ -11,6 +11,8 @@ opt.nThreads = 1  # test code only supports 1 thread
 opt.batchSize = 1  # test code only supports 1 batch
 opt.serial_batches = True
 opt.no_flip = True
+opt.augment_train = False
+
 
 data_loader = CreateDataLoader(opt)
 dataset = data_loader.load_data()

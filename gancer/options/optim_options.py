@@ -115,7 +115,7 @@ class OptimOptions(BaseOptions):
         self.parser.add_argument(
                 '--lr',
                 type=float,
-                default=0.0002,
+                default=0.0001,
                 help='initial learning rate for adam')
         self.parser.add_argument(
                 '--lr_decay_iters',

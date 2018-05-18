@@ -53,16 +53,27 @@ class Vox2VoxModel(BaseModel):
 
         if self.isOptim:
             # define loss functions: optimality and feasibility
+            self.multi_obj = False
             if opt.objective == 'ideal_l2':
                 self.criterionOptim = torch.nn.MSELoss()
             elif opt.objective == 'ideal_l1':
                 self.criterionOptim = torch.nn.L1Loss()
             elif opt.objective == 'elementwise':
                 self.criterionOptim = lambda m, n: (m * n).mean()
+            elif opt.objective == 'linear_l2':
+                self.criterionOptim = lambda m, n: (m * n).mean()
             else:
                 raise NotImplementedError('i do not recognize this objective [{}]'.format(opt.objective))
             self.criterionGAN = networks.GANLoss(
                     use_lsgan=not opt.no_lsgan, tensor=self.Tensor)
+
+            if opt.objective == 'linear_l2':
+                # self.criterionSmooth = lambda m, n: (m - n).norm()
+                self.criterionSmooth = torch.nn.MSELoss()
+                self.multi_obj = True
+            else:
+                self.criterionSmooth = lambda m: ((m + 1) / 2).norm()
+
 
             self.lambda_dual = self.opt.lambda_dual
             self.dual_decay = self.opt.dual_decay
@@ -103,6 +114,13 @@ class Vox2VoxModel(BaseModel):
             self.optimObj = input['obj']
             if len(self.gpu_ids) > 0:
                 self.optimObj = self.optimObj.cuda(self.gpu_ids[0], async=True)
+
+            if self.multi_obj:
+                self.ideal = input['ideal']
+                if len(self.gpu_ids) > 0:
+                    self.ideal = self.ideal.cuda(self.gpu_ids[0], async=True)
+
+
 
 
     def generate_samples(self, nsamples):
@@ -149,7 +167,7 @@ class Vox2VoxModel(BaseModel):
         if self.is_feasible.sum().item() == len(self.is_feasible):
             self.loss_D_real = self.criterionGAN(pred_real, True)
         elif self.is_feasible.sum().item() == 0:
-            self.loss_D_real = self.criterionGAN(pred_real, False)
+            self.loss_D_real = self.criterionGAN(pred_real, False) * 5 
         elif self.is_feasible.sum().item() == len(self.is_feasible) * -1:
             self.loss_D_real = self.criterionGAN(pred_real, True)
         else:
@@ -173,32 +191,37 @@ class Vox2VoxModel(BaseModel):
         elif self.is_feasible.sum().item() == len(self.is_feasible) * -1 :
             self.loss_G_L1 = self.criterionL1(self.fake_B,
                     self.real_B) * self.opt.lambda_A
+        elif self.is_feasible.sum().item() == 0:
+            self.loss_G_L1 = self.criterionL1(self.fake_B,
+                    self.real_B) * self.opt.lambda_A * 0.0
         else:
-            self.loss_G_L1 = 0
+            raise ValueError('something went wrong with training augment.')
         self.loss_G = self.loss_G_GAN + self.loss_G_L1
 
         self.loss_G.backward()
 
     def optimize_ipman(self):
-        self.real_A = Variable(self.input_A)
+        # pu.db
+        noise_scale = 0.01 * torch.rand(1).tolist()[0] + 1.0
+        self.real_A = Variable(self.input_A / noise_scale)
         self.fake_B = self.netG(self.real_A)
+        self.real_B = Variable(self.input_B)
 
         self.optimizer_G.zero_grad()
         fake_AB = torch.cat((self.real_A, self.fake_B), 1)
         pred_fake = self.netD(fake_AB)
-        pu.db
         # TODO: I am using criterion GAN but might have to change it to a fixed
         # log function.
-        self.loss_feas = -1 * (pred_fake + 1e-6).log().mean()
-        # self.loss_feas = self.criterionGAN(pred_fake, True)
-        # self.loss_feas = self.loss_feas
-        # pu.db
+        # self.loss_feas = -1 * (pred_fake + 1e-6).log().mean()
+        self.loss_feas = self.criterionGAN(pred_fake, True)
 
-        # TODO: haven't defined optimObj yet
-        self.loss_opt = self.criterionOptim(self.fake_B, self.optimObj)
-        self.loss_smooth = pred_fake.norm() * 0.005
-        # self.loss_smooth = self.L2Regularizer(pred_fake, False)
-        # self.loss_smooth = self.loss_smooth * 0.0
+        self.loss_opt = self.criterionOptim(self.fake_B, self.optimObj) + 1 
+
+        if self.multi_obj is True:
+            self.loss_smooth = self.criterionSmooth(self.fake_B, self.ideal) 
+        else:
+            self.loss_smooth = self.criterionSmooth(self.fake_B) * 0.0001
+
 
         self.loss_G = self.loss_feas + self.loss_opt * self.lambda_dual + self.loss_smooth * self.lambda_dual
         self.loss_G.backward()
@@ -219,7 +242,7 @@ class Vox2VoxModel(BaseModel):
         return OrderedDict([('G_GAN', self.loss_G_GAN.data[0]), ('G_L1', self.loss_G_L1.data[0]), ('D_real', self.loss_D_real.data[0]), ('D_fake', self.loss_D_fake.data[0])])
 
     def get_current_ipman_errors(self):
-        return OrderedDict([('G_Feas', self.loss_feas.data[0]), ('G_Opt', self.loss_opt.data[0]), ('Lambda', self.lambda_dual)])
+        return OrderedDict([('G_Feas', self.loss_feas.data[0]), ('G_Opt', self.loss_opt.data[0]), ('G_smooth', self.loss_smooth.data[0])])
 
     def get_current_visuals(self):
         real_A = util.tensor2vid(self.real_A.data)
@@ -234,6 +257,7 @@ class Vox2VoxModel(BaseModel):
                 obj = util.tensor2vid(self.optimObj.data, gray_to_rgb=False)
             else:
                 obj = util.tensor2vid(self.optimObj.data)
+                # obj = util.tensor2vid(self.ideal.data)
             return OrderedDict([('input', real_A), ('decision', fake_B), ('obj', obj), ('feas', real_B)])
         else:
             return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('real_B', real_B)])
@@ -244,3 +268,5 @@ class Vox2VoxModel(BaseModel):
 
     def update_lambda_dual(self, decay_weight=1):
         self.lambda_dual = self.lambda_dual * self.dual_decay * decay_weight
+        print('lambda = %.7f' % self.lambda_dual)
+
