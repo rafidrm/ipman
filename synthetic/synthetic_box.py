@@ -14,6 +14,16 @@ from options import load_params
 import plot_utils as plot
 
 
+def rosenbrock(x, a):
+    quad = torch.Tensor([[1.0, 0.0], [0.0, 0.0]])
+    lin1 = torch.Tensor([[-2 * a, 0.0]])
+    lin2 = torch.Tensor([[0.0, 1.0]])
+    term1 = torch.mm(torch.mm(x, quad), x.t()) + \
+        torch.mm(lin1, x.t()) + (a ** 2)
+    term2 = -1 * torch.mm(torch.mm(x, quad), x.t()) + torch.mm(lin2, x.t())
+    return (term1 + 100 * term2 * term2).mean()
+
+
 def get_loss_func(mode='test'):
     if mode == 'test':
         return lambda n: (n * 2).mean()
@@ -21,8 +31,10 @@ def get_loss_func(mode='test'):
         return lambda m, n: (m * n).mean()
     elif mode == 'test_quadratic':
         return lambda n: (torch.pow(n - 1, 2)).mean()
-    elif mode == 'quadratic':
+    elif mode == 'quadratic' or mode == 'bilinear':
         return lambda v, Q, r: (torch.mm(torch.mm(v, Q), v.t()) + torch.mm(r, v.t())).mean()
+    elif mode == 'rosenbrock':
+        return rosenbrock
     else:
         raise NotImplementedError('distribution not recognized')
 
@@ -285,7 +297,7 @@ def generate_epsilon_hist(mdl, epsilons, save_fig=False):
         fig, ax = plot.plot_hist(epsilons, alpha=0.7)
 
 
-def generate_2d_samples(mdl, n_samples=2000, samples=None, show_real=True, save_fig=False):
+def generate_2d_samples(mdl, n_samples=1000, samples=None, show_real=True, save_fig=False):
     ''' plot 2-D samples'''
     if save_fig:
         save_filename = 'id_{}_loss_{}_epoch_{}.png'.format(
@@ -315,30 +327,54 @@ def generate_2d_samples(mdl, n_samples=2000, samples=None, show_real=True, save_
         kwargs['zorder'] = -10
         kwargs['mode'] = mdl.data['mode']
         plot.plot_2d_samples(gen_dist, fig, ax, **kwargs)
-        # fig2, ax2 = plot.plot_hist(gen_dist, color='#ed7d31', alpha=0.7)
-        # if save_fig:
-        #     plot.plot_2d_samples(
-        # gen_dist, fig, ax, color='#ed7d31', alpha=0.3, save_fig=save_path)
-        # else:
-        # plot.plot_2d_samples(gen_dist, fig, ax, color='#ed7d31', alpha=0.3)
 
 
-def optimizer(mdl):
+def optimizer(mdl, compare='None'):
     # first freeze gradients of the discriminator
     mdl.D = freeze_grads(mdl.D)
     model = mdl.model
     dual = model['dual_init']
+    set_dual = False
 
     if model['loss'] == 'linear':
-        # linear_loss = torch.Tensor([1, 0])
-        linear_loss = torch.Tensor([1, 1])
+        linear_loss = torch.Tensor([1, 0])
+        optimizer_loss_func = lambda x: mdl.optimizer_loss(x, linear_loss)
+        err_func = lambda x: (x * linear_loss).tolist()[0]
+        decision_err_func = lambda x: np.abs(x[0] + 1)
+
+    elif model['loss'] == 'bilinear':
+        quad_loss = torch.Tensor([[0, 0.5], [0.5, 0]])
+        lin_loss = torch.Tensor([[-4, -4]])
+        optimizer_loss_func = lambda x: mdl.optimizer_loss(
+            x, quad_loss, lin_loss)
+        err_func = lambda x: (x[0] * x[1]) - 4 * (x[0] + x[1])
+        decision_err_func = lambda x: min(
+            np.linalg.norm(x - np.array([-1, 17])),
+            np.linalg.norm(x - np.array([17, -1])))
+
     elif model['loss'] == 'quadratic':
-        quad_loss = torch.Tensor([[0, 1], [1, 0]])
-        lin_loss = torch.Tensor([[-8, -8]])
-        # quad_loss = torch.Tensor([[1, 0], [0, 1]])
-        # lin_loss = torch.Tensor([[-10, -22]])
+        quad_loss = torch.Tensor([[1, 0], [0, 1]])
+        lin_loss = torch.Tensor([[-10, -22]])
+        optimizer_loss_func = lambda x: mdl.optimizer_loss(
+            x, quad_loss, lin_loss)
+        err_func = lambda x: (x[0] - 5) ** 2 + (x[1] - 11) ** 2
+        decision_err_func = lambda x: np.linalg.norm(x - np.array([5, 11]))
+
+    elif model['loss'] == 'rosenbrock':
+        optimizer_loss_func = lambda x: rosenbrock(x, 3.5)
+        err_func = lambda x: (3.5 - x[0]) ** 2 + 100 * (x[1] - x[0] ** 2) ** 2
+        decision_err_func = lambda x: np.linalg.norm(
+            x - np.array([3.5, 12.25]))
+
     else:
         raise NotImplementedError('dont use this loss.')
+
+    error_rate = []
+
+    if compare == 'unconstrained':
+        barrier_func = lambda x: torch.zeros(1)
+    else:
+        barrier_func = lambda x: -1 * (x + 1e-20).log()
 
     for epoch in range(model['o_num_epochs']):
         for _ in range(model['g_steps']):
@@ -350,15 +386,12 @@ def optimizer(mdl):
                     mdl.g_sampler(1, model['g_input_size']))
                 g_fake_data = mdl.G(gen_input)
                 g_fake_decision = mdl.D(mdl.preprocess(g_fake_data))
-                g_feas_error = -1 * (g_fake_decision + 1e-20).log()
+                g_feas_error = barrier_func(g_fake_decision)
+                # g_feas_error = -1 * (g_fake_decision + 1e-20).log()
                 # g_feas_error = mdl.criterion(
                 #    g_fake_decision, Variable(torch.ones(1)))
 
-                # if linear uncomment this:
-                g_opt_error = mdl.optimizer_loss(g_fake_data, linear_loss)
-                # if quadratic uncomment this:
-                # g_opt_error = mdl.optimizer_loss(
-                #     g_fake_data, quad_loss, lin_loss)
+                g_opt_error = optimizer_loss_func(g_fake_data)
 
                 g_error += g_feas_error + dual * g_opt_error
             g_error.backward()
@@ -369,7 +402,6 @@ def optimizer(mdl):
             mdl.epoch = epoch
             dual = dual * model['dual_decay']
             opt = mdl.generate_optimal_sol()
-            # pu.db
             print('epoch: {}, feas: {} + dual: {} *  opt: {}'.format(
                 epoch,
                 round(extract(g_feas_error)[0], 3),
@@ -381,35 +413,69 @@ def optimizer(mdl):
             generate_2d_samples(mdl, show_real=True, save_fig=True)
 
             # if epoch > 14000:
-            if epoch > 40000:
+            if epoch > 40000 and set_dual == False:
                 model['dual_decay'] = 1.005
+                set_dual = True
+
+        if epoch % 2500 == 0:
+            if compare == 'store' or compare == 'unconstrained':
+                # mean_err = generate_samples_and_evaluate(mdl, err_func)
+                dist_sol = generate_samples_and_store(mdl, err_func)
+                error_rate.append((epoch, dist_sol))
 
     opt_sol = list(mdl.generate_optimal_sol(1000))
 
-    # evaluate scores
     scores = []
     for sol in opt_sol:
-        # err = (sol[0] - 5) ** 2 + (sol[1] - 11) ** 2
-        # err = 2 * (sol[0] * sol[1]) - 8 * sol[0] - 8 * sol[1]
-        # sol = torch.Tensor([sol])
-        err = mdl.optimizer_loss(sol, linear_loss).tolist()
-        # err = mdl.optimizer_loss(sol, quad_loss, lin_loss).tolist()
-        scores.append((np.abs(err - model['optval']), sol))
+        err = err_func(sol)
+        decision_err = decision_err_func(sol)
+
+        diff_err = np.abs(err - model['optval'])
+        scores.append((diff_err, sol, decision_err))
+
     scores = sorted(scores, key=lambda x: x[0])
-    scores = scores[0:round(1000 * 0.9)]
+    scores = scores[0:round(1000 * model['cvar_alpha'])]
+    all_errs = np.array([score[0] for score in scores]).T
     sols = np.array([score[1] for score in scores]).T
+    decision_err = np.array([score[2] for score in scores]).T
     generate_2d_samples(mdl, samples=sols, show_real=True, save_fig=True)
 
-    # pu.db
-    # bins, epsilons = np.histogram(scores)
-    # bins = bins / np.sum(bins)
-    # print('optimal solutions sampled:')
-    # print(opt_sol)
-    # print('epsilons:')
-    # print(epsilons)
-    # print('bins:')
-    # print(bins)
-    # generate_epsilon_hist(mdl, scores, save_fig=True)
+    # calculate the relative loss
+    mean_ds_errs = np.mean(decision_err)
+
+    print('\n\nerror stats: [min | max | mean | decision]:')
+    print('[ {}\t{}\t{}\t{} ]\n\n'.format(
+        np.min(all_errs), np.mean(all_errs), np.max(all_errs), mean_ds_errs))
+
+    if compare == 'store' or compare == 'unconstrained':
+        return error_rate
+
+
+def generate_samples_and_store(mdl, err_func):
+    opt_sol = list(mdl.generate_optimal_sol(1000))
+    scores = []
+
+    for sol in opt_sol:
+        err = err_func(sol)
+        err = np.abs(err - mdl.model['optval'])
+        scores.append((err, sol))
+    scores = sorted(scores, key=lambda x: x[0])
+    scores = scores[0:round(1000 * mdl.model['cvar_alpha'])]
+    sols = np.array([score[1] for score in scores]).T
+    return sols
+
+
+def generate_samples_and_evaluate(mdl, err_func):
+    opt_sol = list(mdl.generate_optimal_sol(1000))
+    total_errors = []
+
+    for sol in opt_sol:
+        err = err_func(sol)
+        err = np.abs(err - mdl.model['optval'])
+        total_errors.append(err)
+
+    mean_err = np.mean(total_errors)
+    return mean_err
 
 
 def debug_discriminator(mdl):
@@ -441,22 +507,16 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
         for epoch in range(model['p_num_epochs']):
             for _ in range(model['d_steps']):
                 mdl.D.zero_grad()
-                # pu.db
                 d_error = 0
                 for __ in range(model['minibatch_size']):
                     d_real_data = Variable(mdl.d_sampler(1))
-                    # d_real_data = Variable(
-                    #     mdl.d_sampler(model['minibatch_size']))
                     d_real_decision = mdl.D(mdl.preprocess(d_real_data).t())
                     d_real_error = mdl.criterion(
                         d_real_decision, Variable(torch.ones(1)))
-                    # d_real_error.backward()  # compute gradients but don't
                     # update yet
 
                     if np.random.rand() > 0.3:
                         d_gen_input = mdl.g_sampler(1, model['g_input_size'])
-                        # d_gen_input = Variable(
-                        #     mdl.g_sampler(model['minibatch_size'], model['g_input_size']))
                         # detach to avoid training G
                         d_fake_data = mdl.G(d_gen_input).detach()
                         d_fake_decision = mdl.D(mdl.preprocess(d_fake_data))
@@ -467,7 +527,6 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
 
                     d_fake_error = mdl.criterion(
                         d_fake_decision, Variable(torch.zeros(1)))
-                    # d_fake_error.backward()
                     d_error += d_real_error + d_fake_error
                 d_error.backward()
 
@@ -475,20 +534,15 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
 
             for _ in range(model['g_steps']):
                 mdl.G.zero_grad()
-                # pu.db
 
                 g_total_error = 0
                 for __ in range(model['minibatch_size']):
                     gen_input = Variable(
                         mdl.g_sampler(1, model['g_input_size']))
-                    # gen_input = Variable(
-                    # mdl.g_sampler(model['minibatch_size'],
-                    # model['g_input_size']))
                     g_fake_data = mdl.G(gen_input)
                     g_fake_decision = mdl.D(mdl.preprocess(g_fake_data))
                     g_error = mdl.criterion(
                         g_fake_decision, Variable(torch.ones(1)))
-                    # g_error.backward()
                     g_total_error += g_error
                 g_total_error.backward()
 
@@ -502,18 +556,13 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
                     extract(g_error)[0]))
                 real_dist = stats(extract(d_real_data))
                 fake_dist = stats(extract(d_fake_data))
-                # print('       Real: {}, Fake: {}'.format(real_dist,
-                # fake_dist))
 
         # final discriminator update
         for _ in range(50):
             mdl.D.zero_grad()
-            # pu.db
             d_error = 0
             for __ in range(model['minibatch_size']):
                 d_real_data = Variable(mdl.d_sampler(1))
-                # d_real_data = Variable(
-                #     mdl.d_sampler(model['minibatch_size']))
                 d_real_decision = mdl.D(mdl.preprocess(d_real_data).t())
                 d_real_error = mdl.criterion(
                     d_real_decision, Variable(torch.ones(1)))
@@ -565,6 +614,35 @@ def box_experiment(data_params={}, model_params={}, stage='predict'):
         generate_2d_samples(mdl, show_real=True)
         plot.show()
 
+    elif stage == 'compare':
+        mdl = GANModel(data, model, load_model=True)
+        mdl.epoch = 'pre'
+        res_real = optimizer(mdl, compare='store')
+
+        mdl = GANModel(data, model, load_model=True)
+        mdl.epoch = 'pre'
+        res_fake = optimizer(mdl, compare='unconstrained')
+
+        for real, fake in zip(res_real, res_fake):
+            save_filename = 'comparison_id_{}_loss_{}_epoch_{}.png'.format(
+                mdl.model['id'], mdl.model['loss'], real[0])
+            save_path = os.path.join(mdl.model['plots_dir'], save_filename)
+
+            kwargs = {'alpha': 0.3, 'numticks': 5, 'save_fig': save_path}
+
+            fig, ax = plot.plot_2d_samples(real[1], **kwargs)
+
+            kwargs['color'] = '#be3392'
+            kwargs['zorder'] = -5
+            fig, ax = plot.plot_2d_samples(fake[1], fig, ax, **kwargs)
+
+            gen_dist = mdl.d_sampler(1000).numpy()
+            kwargs['color'] = '#ed7d31'
+            kwargs['alpha'] = 0.1
+            kwargs['zorder'] = -10
+            kwargs['mode'] = mdl.data['mode']
+            plot.plot_2d_samples(gen_dist, fig, ax, **kwargs)
+
     else:
         raise NotImplementedError('dont recognize stage {}'.format(stage))
 
@@ -573,21 +651,91 @@ if __name__ == "__main__":
     # noisy_box1: generator too good for discriminator
     # noisy_box2: looks a lot better
     data_params = {'preprocess': False, 'mode': 'noisy_box_dist'}
-    model_params = {'p_num_epochs': 10000, 'tol': 0.01,
-                    'g_input_size': 2,
-                    'g_output_size': 2,
-                    'd_input_size': 2,
-                    'minibatch_size': 50,
-                    'loss': 'linear',
-                    'o_num_epochs': 70100,
-                    'dual_decay': 1.01,
-                    'dual_init': 0.05,
-                    'plot_interval': 5000,
-                    'stronger_d': True,
-                    'id': 'noisy_box2',
-                    'optval': 0,
-                    'notes': 'minimizing quadratic with clipping'}
 
+    linear_minx_model_params = {'p_num_epochs': 10000, 'tol': 0.01,
+                                'g_input_size': 2,
+                                'g_output_size': 2,
+                                'd_input_size': 2,
+                                'minibatch_size': 50,
+                                'loss': 'linear',
+                                'o_num_epochs': 2500,
+                                'dual_decay': 1.01,
+                                'dual_init': 0.05,
+                                'plot_interval': 400,
+                                'stronger_d': True,
+                                'id': 'noisy_box2',
+                                'optval': -1,
+                                'cvar_alpha': 0.95,
+                                'notes': 'minimizing linear with clipping'}
+    linear_hard_minx_model_params = {'p_num_epochs': 10000, 'tol': 0.01,
+                                     'g_input_size': 2,
+                                     'g_output_size': 2,
+                                     'd_input_size': 2,
+                                     'minibatch_size': 50,
+                                     'loss': 'linear',
+                                     'o_num_epochs': 70100,
+                                     'dual_decay': 1.01,
+                                     'dual_init': 0.05,
+                                     'plot_interval': 5000,
+                                     'stronger_d': True,
+                                     'id': 'noisy_box2',
+                                     'optval': 8,
+                                     'cvar_alpha': 0.90,
+                                     'notes': 'minimizing hard linear with clipping'}
+
+    quadratic_model_params = {'p_num_epochs': 10000, 'tol': 0.01,
+                              'g_input_size': 2,
+                              'g_output_size': 2,
+                              'd_input_size': 2,
+                              'minibatch_size': 50,
+                              'loss': 'quadratic',
+                              'o_num_epochs': 10100,
+                              'dual_decay': 1.01,
+                              'dual_init': 0.05,
+                              'plot_interval': 2000,
+                              'stronger_d': True,
+                              'id': 'noisy_box2',
+                              'optval': 0,
+                              'cvar_alpha': 0.90,
+                              'notes': 'minimizing quadratic with clipping'}
+
+    bilinear_model_params = {'p_num_epochs': 10000, 'tol': 0.01,
+                             'g_input_size': 2,
+                             'g_output_size': 2,
+                             'd_input_size': 2,
+                             'minibatch_size': 50,
+                             'loss': 'bilinear',
+                             'o_num_epochs': 12100,
+                             'dual_decay': 1.01,
+                             'dual_init': 0.05,
+                             'plot_interval': 1000,
+                             'stronger_d': True,
+                             'id': 'noisy_box2',
+                             'optval': -81,
+                             'cvar_alpha': 0.9,
+                             'notes': 'minimizing bilinear with clipping'}
+
+    rosenbrock_model_params = {'p_num_epochs': 10000, 'tol': 0.01,
+                               'g_input_size': 2,
+                               'g_output_size': 2,
+                               'd_input_size': 2,
+                               'minibatch_size': 50,
+                               'loss': 'rosenbrock',
+                               'o_num_epochs': 89100,
+                               'dual_decay': 1.2,
+                               'dual_init': 0.0001,
+                               'plot_interval': 5000,
+                               'print_interval': 100,
+                               'stronger_d': True,
+                               'id': 'noisy_box2',
+                               'optval': 0,
+                               'cvar_alpha': 0.9,
+                               'notes': 'minimizing quadratic with clipping'}
+
+    model_params = bilinear_model_params
+    # model_params = quadratic_model_params
+    # model_params = linear_minx_model_params
+    # model_params = rosenbrock_model_params
     print('*********************\n data parameters:\n*********************')
     pprint(data_params)
     print('*********************\n model parameters:\n*********************')
@@ -595,5 +743,3 @@ if __name__ == "__main__":
     # model_params['d_input_size'] = model_params['minibatch_size']
     box_experiment(data_params=data_params,
                    model_params=model_params, stage='optimize')
-
-    # IF this doesnt work add dropout.

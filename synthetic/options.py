@@ -32,6 +32,7 @@ MODEL_PARAMS = {
     'plot_interval': 1000,
     'stop': False,
     'stronger_d': False,
+    'cvar_alpha': 0.95,
 }
 
 
