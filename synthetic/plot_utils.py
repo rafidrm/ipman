@@ -12,7 +12,7 @@ params = {
     'ytick.labelsize': 10,
     'font.family': 'Times New Roman',
     'figure.figsize': [4, 4],
-    'lines.markeredgewidth': 0,
+    # 'lines.markeredgewidth': 0,
     'lines.linestyle': '--',
     'lines.linewidth': 0.75,
 }
@@ -30,6 +30,10 @@ def post_ax_update(ax, kwargs):
         ax.set_ylabel(kwargs['set_ylabel'])
     if 'set_xlabel' in kwargs:
         ax.set_xlabel(kwargs['set_xlabel'])
+    if 'title' in kwargs:
+        ax.set_title(kwargs['title'])
+    if 'legend' in kwargs:
+        ax.legend(kwargs['legend'])
 
     ax.grid(linestyle='-', linewidth=0.5, alpha=0.3)
     if 'no_spines' in kwargs:
@@ -44,6 +48,7 @@ def post_ax_update(ax, kwargs):
 
     if 'mode' in kwargs:
         ax = plot_poly(kwargs['mode'], ax)
+
     return ax
 
 
@@ -90,6 +95,26 @@ def plot_2d_samples(data, fig=None, ax=None, **kwargs):
                marker=marker,
                zorder=zorder)
     ax = post_ax_update(ax, kwargs)
+    if 'save_fig' in kwargs:
+        fig.savefig(kwargs['save_fig'], bbox_inches='tight',
+                    dpi=300)
+    return fig, ax
+
+
+def plot_lines(data, fig=None, ax=None, **kwargs):
+    if ax == None:
+        fig, ax = plt.subplots(1, 1)
+    color = kwargs['color'] if 'color' in kwargs else '#2f528f'
+    # alpha = kwargs['alpha'] if 'alpha' in kwargs else 1.0
+    # marker = kwargs['marker'] if 'marker' in kwargs else 'o'
+    zorder = kwargs['zorder'] if 'zorder' in kwargs else 1
+    ax.semilogy(data[0], data[1], marker='s',
+                c=color,
+                # alpha=alpha,
+                # marker=marker,
+                zorder=zorder)
+    ax = post_ax_update(ax, kwargs)
+
     if 'save_fig' in kwargs:
         fig.savefig(kwargs['save_fig'], bbox_inches='tight',
                     dpi=300)
