@@ -6,6 +6,8 @@ We present a new methodology, called IPMAN, that combines interior point methods
 
 This code contains the implementations for for the numerical experiments in Sections 4.1 and 4.2 of the paper. In the synthetic folder, we have the code for several toy examples. In the gancer folder, we apply our methodology on the intensity modulated radiation therapy (IMRT) treatment planning problem.
 
+[manifold](imgs/manifold.png).
+
 
 ## Prerequisites
 - Linux or OS X
