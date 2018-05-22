@@ -6,9 +6,6 @@ We present a new methodology, called IPMAN, that combines interior point methods
 
 This code contains the implementations for for the numerical experiments in Sections 4.1 and 4.2 of the paper. In the synthetic folder, we have the code for several toy examples. In the gancer folder, we apply our methodology on the intensity modulated radiation therapy (IMRT) treatment planning problem. 
 
-The codebase in the the IMRT example is derived from a [previous architecture](https://github.com/rafidrm/gancer), which itself borrows from the CycleGAN PyTorch implementation of [junyanz](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix).
-
-
 
 ## Prerequisites
 - Linux or OS X
@@ -35,3 +32,17 @@ python setup.py install
 
 ## Running the code
 ### Synthetic
+- Run the code.
+
+
+
+### IMRT / GANCER
+
+
+
+## Acknowledgements
+
+The codebase in the the IMRT example is derived from a [previous architecture](https://github.com/rafidrm/gancer), which itself borrows from the CycleGAN PyTorch implementation of [junyanz](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix).
+
+
+
