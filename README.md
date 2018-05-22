@@ -22,9 +22,7 @@ git clone https://github.com/pytorch/vision
 cd vision
 python setup.py install
 ```
-- For synthetic:
 - Add checkpoints and plots directories inside synthetic folder
-- For gancer:
 - Add checkpoints, datasets, and results directories inside gancer folder
 - Install python libraries [visdom](https://github.com/facebookresearch/visdom) and [dominate](https://github.com/Knio/dominate)
 
@@ -46,8 +44,9 @@ python synthetic_examples.py --stage optimize --opt linear
 ```
 
 
-
 ### IMRT / GANCER
+
+We will provide the data set at a later date.
 
 
 
